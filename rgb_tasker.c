@@ -50,8 +50,9 @@
 #define COLOR_RAND_MIN 0
 
 #define DEBOUNCE_PERIOD_US (200 * 1000)
-#define FADE_STEP_US (50 * 1000)
-#define DELETE_DELAY_US (7 * FADE_STEP_US)
+#define FADE_STEP_US (2 * 1000)
+#define DELETE_STEP_US (50 * 1000)
+#define DELETE_DELAY_US (7 * DELETE_STEP_US)
 #define LOOP_DELAY_US 1000
 
 static int event_msk = 0;
@@ -83,6 +84,16 @@ static inline uint32_t fade_color(uint32_t color_in, int count) {
 
   // change the colors, but not the mask
   return urgb_u32(r >> count, g >> count, b >> count) ^
+         ((color_in >> COLOR_SHIFT) << COLOR_SHIFT);
+}
+
+static inline uint32_t fade_byte(uint32_t color_in, int frac) {
+  int r = (color_in & R_MSK) >> R_SHIFT;
+  int g = (color_in & G_MSK) >> G_SHIFT;
+  int b = (color_in & B_MSK) >> B_SHIFT;
+
+  // change the colors, but not the mask
+  return urgb_u32((r * frac) >> 8, (g * frac) >> 8, (b * frac) >> 8) ^
          ((color_in >> COLOR_SHIFT) << COLOR_SHIFT);
 }
 
@@ -131,59 +142,6 @@ static void add_position(int pos) {
 }
 
 static void core1_entry() {
-  int prev = 0;
-
-  while (1) {
-    if (event_msk != prev) {
-      prev = event_msk;
-      printf("new mask: %08X\n", prev);
-      if(prev == 0) {
-        for(int i = 0; i < NUM_PIXELS; i++) {
-          printf("color_state[%02d] = %08X\n", i, color_state[i]);
-        }
-      }
-    }
-    busy_wait_us(1);
-  }
-}
-
-int main() {
-  // set_sys_clock_48();
-  stdio_init_all();
-  gpio_init(PICO_DEFAULT_LED_PIN);
-  gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
-  gpio_put(PICO_DEFAULT_LED_PIN, true);
-  sleep_ms(1000);
-  gpio_put(PICO_DEFAULT_LED_PIN, false);
-  printf("--- WS2812 RGB Tasker ---\n"
-         "- Using pins:\n"
-         "LED=    %d\n"
-         "UP=     %d\n"
-         "DOWN=   %d\n"
-         "LEFT=   %d\n"
-         "RIGHT=  %d\n"
-         "MID=    %d\n",
-         WS2812_PIN, UP_PIN, DOWN_PIN, LEFT_PIN, RIGHT_PIN, MID_PIN);
-
-  srand((uint32_t) get_absolute_time());
-
-  bi_decl(bi_program_description("RGB Tasker"));
-  bi_decl(bi_1pin_with_name(LEFT_PIN, "WS2812 pin"));
-  bi_decl(bi_1pin_with_name(UP_PIN, "Joystick UP (first pin)"));
-  bi_decl(bi_1pin_with_name(MID_PIN, "Joystick MID (last pin)"));
-
-  for (int i = 0; i < 5; i++) {
-    gpio_init(joystick_pins[i]);
-    gpio_set_dir(joystick_pins[i], false);
-    gpio_set_pulls(joystick_pins[i], true, false);
-  }
-  for (int i = 0; i < 5; i++) {
-    gpio_set_irq_enabled_with_callback(joystick_pins[i], GPIO_IRQ_EDGE_FALL, true,
-                                       joystick_callback);
-  }
-
-  multicore_launch_core1(core1_entry);
-
   uint64_t start_time = 0;
   uint64_t selection_change = 0;
   uint64_t delete_start = 0;
@@ -272,7 +230,7 @@ int main() {
       // deleting something
       // calculate ceil
       int steps_after =
-          (start_time - delete_start + FADE_STEP_US - 1) / FADE_STEP_US;
+          (start_time - delete_start + DELETE_STEP_US - 1) / DELETE_STEP_US;
       for (int i = 0; i < NUM_PIXELS; i++) {
         if (color_state[i] & COLOR_DELETING) {
           color_state[i] = (color_state[i] & (~COLOR_MSK)) |
@@ -286,12 +244,12 @@ int main() {
         color_state[0] |= COLOR_SELECTED;
       } 
       int steps_after = (start_time - selection_change) / FADE_STEP_US;
-      steps_after %= 8;
-      int fade_count = steps_after > 4 ? 7 - steps_after : steps_after;
+      steps_after %= (256 * 2);
+      int fade_frac = steps_after < 256 ? steps_after : 511 - steps_after;
       for (int i = 0; i < NUM_PIXELS; i++) {
         if (color_state[i] & COLOR_SELECTED) {
           color_state[i] = (color_state[i] & (~COLOR_MSK)) |
-                           fade_color(colors[i], fade_count);
+                           fade_byte(colors[i], fade_frac);
         }
       }
     }
@@ -299,4 +257,57 @@ int main() {
     put_pixels();
     busy_wait_until(start_time + LOOP_DELAY_US);
   }
+}
+
+int main() {
+  // set_sys_clock_48();
+  stdio_init_all();
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
+  gpio_put(PICO_DEFAULT_LED_PIN, true);
+  sleep_ms(1000);
+  gpio_put(PICO_DEFAULT_LED_PIN, false);
+  printf("--- WS2812 RGB Tasker ---\n"
+         "- Using pins:\n"
+         "LED=    %d\n"
+         "UP=     %d\n"
+         "DOWN=   %d\n"
+         "LEFT=   %d\n"
+         "RIGHT=  %d\n"
+         "MID=    %d\n",
+         WS2812_PIN, UP_PIN, DOWN_PIN, LEFT_PIN, RIGHT_PIN, MID_PIN);
+
+  srand((uint32_t) get_absolute_time());
+
+  bi_decl(bi_program_description("RGB Tasker"));
+  bi_decl(bi_1pin_with_name(LEFT_PIN, "WS2812 pin"));
+  bi_decl(bi_1pin_with_name(UP_PIN, "Joystick UP (first pin)"));
+  bi_decl(bi_1pin_with_name(MID_PIN, "Joystick MID (last pin)"));
+
+  for (int i = 0; i < 5; i++) {
+    gpio_init(joystick_pins[i]);
+    gpio_set_dir(joystick_pins[i], false);
+    gpio_set_pulls(joystick_pins[i], true, false);
+  }
+  for (int i = 0; i < 5; i++) {
+    gpio_set_irq_enabled_with_callback(joystick_pins[i], GPIO_IRQ_EDGE_FALL, true,
+                                       joystick_callback);
+  }
+
+  multicore_launch_core1(core1_entry);
+  int prev = 0;
+
+  while (1) {
+    if (event_msk != prev) {
+      prev = event_msk;
+      printf("new mask: %08X\n", prev);
+      if(prev == 0) {
+        for(int i = 0; i < NUM_PIXELS; i++) {
+          printf("color_state[%02d] = %08X\n", i, color_state[i]);
+        }
+      }
+    }
+    busy_wait_us(1);
+  }
+
 }
